@@ -16,7 +16,8 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 from timm.utils import AverageMeter
-
+from datetime import timedelta
+from torch.utils.data import DataLoader, DistributedSampler
 from config import get_config
 from models import build_model
 from data import build_loader
@@ -31,6 +32,20 @@ try:
 except ImportError:
     amp = None
 
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+def ddp_setup(rank, world_size):
+    """
+    Args:
+        rank: Unique identifier of each process
+        world_size: Total number of processes
+    """
+    if not torch.distributed.is_initialized():
+        dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    torch.cuda.set_device(rank)
+
+def cleanup():
+    dist.destroy_process_group()
 
 def parse_option():
     parser = argparse.ArgumentParser('SimMIM pre-training script', add_help=False)
@@ -44,6 +59,7 @@ def parse_option():
 
     # easy config modification
     parser.add_argument('--batch-size', type=int, help="batch size for single GPU")
+    parser.add_argument('--ca', type=bool, default=True, help="Using Cross-Attention Decoder or not")
     parser.add_argument('--data-path', type=str, help='path to dataset')
     parser.add_argument('--resume', help='resume from checkpoint')
     parser.add_argument('--accumulation-steps', type=int, help="gradient accumulation steps")
@@ -66,17 +82,21 @@ def parse_option():
 
 
 def main(config):
+    num_gpus = torch.cuda.device_count()
+    ddp_setup(config.LOCAL_RANK, world_size=num_gpus)
     data_loader_train = build_loader(config, logger, is_pretrain=True)
 
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
-    model = build_model(config, is_pretrain=True)
+    model = build_model(config, is_pretrain=True, ca=True)
     model.cuda()
     logger.info(str(model))
 
     optimizer = build_optimizer(config, model, logger, is_pretrain=True)
     if config.AMP_OPT_LEVEL != "O0":
         model, optimizer = amp.initialize(model, optimizer, opt_level=config.AMP_OPT_LEVEL)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], broadcast_buffers=False)
+    print(f"LOCAL_RANK: {config.LOCAL_RANK}")
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[config.LOCAL_RANK], find_unused_parameters=True)
+    # model = torch.nn.DataParallel(model)
     model_without_ddp = model.module
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -110,7 +130,7 @@ def main(config):
         train_one_epoch(config, model, data_loader_train, optimizer, epoch, lr_scheduler)
         if dist.get_rank() == 0 and (epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)):
             save_checkpoint(config, epoch, model_without_ddp, 0., optimizer, lr_scheduler, logger)
-
+    cleanup()
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info('Training time {}'.format(total_time_str))
@@ -127,9 +147,11 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 
     start = time.time()
     end = time.time()
-    for idx, (img, mask, _) in enumerate(data_loader):
-        img = img.cuda(non_blocking=True)
-        mask = mask.cuda(non_blocking=True)
+    device = torch.device("cuda:0")
+
+    for idx, (img, mask) in enumerate(data_loader):
+        img = img.to(device, non_blocking=True)
+        mask = mask.to(device, non_blocking=True)
 
         loss = model(img, mask)
 
@@ -195,8 +217,8 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 if __name__ == '__main__':
     _, config = parse_option()
 
-    if config.AMP_OPT_LEVEL != "O0":
-        assert amp is not None, "amp not installed!"
+    # if config.AMP_OPT_LEVEL != "O0":
+    #     assert amp is not None, "amp not installed!"
 
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         rank = int(os.environ["RANK"])
@@ -206,7 +228,10 @@ if __name__ == '__main__':
         rank = -1
         world_size = -1
     torch.cuda.set_device(config.LOCAL_RANK)
-    torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    # torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    dist.init_process_group(
+            backend="nccl" if dist.is_nccl_available() else "gloo", timeout=timedelta(seconds=10800)
+        )
     torch.distributed.barrier()
 
     seed = config.SEED + dist.get_rank()

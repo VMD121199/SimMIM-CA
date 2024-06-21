@@ -11,9 +11,9 @@ from .vision_transformer import build_vit
 from .simmim import build_simmim
 
 
-def build_model(config, is_pretrain=True):
+def build_model(config, is_pretrain=True, ca=False):
     if is_pretrain:
-        model = build_simmim(config)
+        model = build_simmim(config, ca)
     else:
         model_type = config.MODEL.TYPE
         if model_type == 'swin':

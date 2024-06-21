@@ -12,11 +12,13 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torchvision.transforms as T
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Dataset
 from torch.utils.data._utils.collate import default_collate
 from torchvision.datasets import ImageFolder
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+from PIL import Image
+import os
 
 class MaskGenerator:
     def __init__(self, input_size=192, mask_patch_size=32, model_patch_size=4, mask_ratio=0.6):
@@ -75,6 +77,28 @@ class SimMIMTransform:
         
         return img, mask
 
+class RS_Dataset(Dataset):
+    def __init__(self, root, transform=None):
+        self.root = root
+        self.transform = transform
+        self.imgs = self._load_data()
+    
+    def _load_data(self):
+        imgs = []
+        for img in os.listdir(self.root):
+            if img.endswith('.png') or img.endswith('.jpg') or img.endswith('.jpeg'):
+                imgs.append(os.path.join(self.root, img))
+        return imgs
+    
+    def __len__(self):
+        return len(self.imgs)
+    
+    def __getitem__(self, idx):
+        img_path = self.imgs[idx]
+        img = Image.open(img_path)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img
 
 def collate_fn(batch):
     if not isinstance(batch[0][0], tuple):
@@ -94,11 +118,10 @@ def collate_fn(batch):
 def build_loader_simmim(config, logger):
     transform = SimMIMTransform(config)
     logger.info(f'Pre-train data transform:\n{transform}')
-
-    dataset = ImageFolder(config.DATA.DATA_PATH, transform)
+    # dataset = ImageFolder(config.DATA.DATA_PATH, transform)
+    dataset = RS_Dataset(config.DATA.DATA_PATH, transform)
     logger.info(f'Build dataset: train images = {len(dataset)}')
-    
-    sampler = DistributedSampler(dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True)
+    # sampler = DistributedSampler(dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True)
+    sampler = DistributedSampler(dataset)
     dataloader = DataLoader(dataset, config.DATA.BATCH_SIZE, sampler=sampler, num_workers=config.DATA.NUM_WORKERS, pin_memory=True, drop_last=True, collate_fn=collate_fn)
-    
     return dataloader
