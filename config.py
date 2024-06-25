@@ -224,6 +224,10 @@ def update_config(config, args):
     # merge from specific arguments
     if _check_args('batch_size'):
         config.DATA.BATCH_SIZE = args.batch_size
+    if _check_args('multimodal'):
+        config.MULTIMODAL = args.multimodal
+    if _check_args('ca'):
+        config.CA = args.ca
     if _check_args('data_path'):
         config.DATA.DATA_PATH = args.data_path
     if _check_args('resume'):

@@ -77,6 +77,18 @@ class SimMIMTransform:
         
         return img, mask
 
+class SimMIMTransformCustom(SimMIMTransform):
+    def __init__(self, config):
+        super().__init__(config)
+        custom_default_mean = (0.485, 0.456, 0.406, 0.435)
+        custom_default_std = (0.229, 0.224, 0.225, 0.234)
+        self.transform_img = T.Compose([
+            T.Resize(config.DATA.IMG_SIZE),
+            T.CenterCrop(config.DATA.IMG_SIZE),
+            T.ToTensor(),
+            T.Normalize(mean=torch.tensor(custom_default_mean),std=torch.tensor(custom_default_std)),
+        ])
+
 class RS_Dataset(Dataset):
     def __init__(self, root, transform=None):
         self.root = root
@@ -100,6 +112,43 @@ class RS_Dataset(Dataset):
             img = self.transform(img)
         return img
 
+# Early fusion
+class RS_multimodal_dataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.image_pairs = self._get_image_pairs()
+
+    def _get_image_pairs(self):
+        image_pairs = []
+        for filename in os.listdir(self.root_dir):
+            if filename.startswith("co") and filename.endswith(".png"):
+                rgb_path = os.path.join(self.root_dir, filename)
+                ir_filename = filename.replace("co", "ir")
+                ir_path = os.path.join(self.root_dir, ir_filename)
+                if os.path.exists(ir_path):
+                    image_pairs.append((rgb_path, ir_path))
+        return image_pairs
+
+    def __len__(self):
+        return len(self.image_pairs)
+
+    def __getitem__(self, idx):
+        rgb_path, ir_path = self.image_pairs[idx]
+        pil2tensor = T.Compose([T.PILToTensor()])
+        # Load and convert to RGB
+        try:
+            rgb_image = pil2tensor(Image.open(rgb_path).convert("RGB"))
+            ir_image = pil2tensor(Image.open(ir_path).convert('L'))
+            combined_image = torch.cat([rgb_image, ir_image], dim=0) 
+        except:
+            breakpoint()
+        # Combine into 4-channel tensor (Early Fusion)
+        combined_image = T.ToPILImage()(combined_image)
+        if self.transform:
+            combined_image = self.transform(combined_image)
+        return combined_image
+
 def collate_fn(batch):
     if not isinstance(batch[0][0], tuple):
         return default_collate(batch)
@@ -117,9 +166,12 @@ def collate_fn(batch):
 
 def build_loader_simmim(config, logger):
     transform = SimMIMTransform(config)
+    transform_custom = SimMIMTransformCustom(config)
     logger.info(f'Pre-train data transform:\n{transform}')
     # dataset = ImageFolder(config.DATA.DATA_PATH, transform)
     dataset = RS_Dataset(config.DATA.DATA_PATH, transform)
+    if config.MULTIMODAL:
+        dataset = RS_multimodal_dataset(config.DATA.DATA_PATH, transform_custom)
     logger.info(f'Build dataset: train images = {len(dataset)}')
     # sampler = DistributedSampler(dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank(), shuffle=True)
     sampler = DistributedSampler(dataset)

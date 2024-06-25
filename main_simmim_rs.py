@@ -56,10 +56,10 @@ def parse_option():
         default=None,
         nargs='+',
     )
-
+    parser.add_argument('--multimodal', type=bool, default=False, help='Multimodal dataset')
     # easy config modification
     parser.add_argument('--batch-size', type=int, help="batch size for single GPU")
-    parser.add_argument('--ca', type=bool, default=True, help="Using Cross-Attention Decoder or not")
+    parser.add_argument('--ca', type=bool, default=False, help="Using Cross-Attention Decoder or not")
     parser.add_argument('--data-path', type=str, help='path to dataset')
     parser.add_argument('--resume', help='resume from checkpoint')
     parser.add_argument('--accumulation-steps', type=int, help="gradient accumulation steps")
@@ -148,7 +148,6 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
     start = time.time()
     end = time.time()
     device = torch.device("cuda:0")
-
     for idx, (img, mask) in enumerate(data_loader):
         img = img.to(device, non_blocking=True)
         mask = mask.to(device, non_blocking=True)
@@ -216,7 +215,8 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 
 if __name__ == '__main__':
     _, config = parse_option()
-
+    print("original config:", parse_option())
+    print("config:", config)
     # if config.AMP_OPT_LEVEL != "O0":
     #     assert amp is not None, "amp not installed!"
 
